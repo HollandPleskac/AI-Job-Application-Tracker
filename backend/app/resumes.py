@@ -2,6 +2,8 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from .s3_client import s3, BUCKET
+import time
+from typing import Literal
 
 router = APIRouter(prefix="/resumes", tags=["resumes"])
 
@@ -46,3 +48,40 @@ def get_upload_url(body: UploadURLRequest):
 # basically lets website directly talk to s3
 # official: where the server signs a policy that lets browser do an HTML form POST directly to S3 (can use a key and constraints)
 # in this case an http post route i can use to upload a resume to s3
+
+
+
+_RESUMES: dict[str, dict] = {}
+
+class ConfirmUpload(BaseModel):
+    key: str
+
+class ResumeRow(BaseModel):
+    id: str
+    filename: str
+    key: str
+    size: int
+    content_type: str
+    status: Literal["processing", "ready", "failed"]
+    created_at: float
+
+@router.post("/confirm", response_model=ResumeRow)
+def confirm_upload(req: ConfirmUpload):
+    # make sure the object is actually in S3
+    try:
+        head = s3().head_object(Bucket=BUCKET, Key=req.key)
+    except Exception:
+        raise HTTPException(400, "Object not in s3")
+
+    resume_id = str(uuid.uuid4())
+    row = {
+        "id": resume_id,
+        "filename": req.key.split("/")[-1],
+        "key": req.key,
+        "size": head["ContentLength"],        
+        "content_type": head.get("ContentType", "application/octet-stream"),
+        "status": "ready", # will do backend processing on resumes for now everything is ready
+        "created_at": time.time(),
+    }
+    _RESUMES[resume_id] = row
+    return row
