@@ -1,5 +1,5 @@
 import uuid
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Path
 from pydantic import BaseModel, Field
 from .s3_client import s3, BUCKET
 import time
@@ -85,3 +85,22 @@ def confirm_upload(req: ConfirmUpload):
     }
     _RESUMES[resume_id] = row
     return row
+
+# list resumes (newest first)
+@router.get("", response_model=list[ResumeRow])
+def list_resumes():
+    return sorted(_RESUMES.values(), key=lambda x: x["created_at"], reverse=True)
+
+
+# short lived download url for a resume (requires resume_id)
+@router.get("/{resume_id}/download-url")
+def get_download_url(resume_id: str = Path(...)):
+    row = _RESUMES.get(resume_id)
+    if not row:
+        raise HTTPException(404, "resume not found")
+    url = s3().generate_presigned_url(
+        "get_object",
+        Params={"Bucket": BUCKET, "Key": row["key"]},
+        ExpiresIn=300,  # 5 minutes
+    )
+    return {"url": url}
