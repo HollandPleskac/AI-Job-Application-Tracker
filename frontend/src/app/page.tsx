@@ -1,103 +1,122 @@
-import Image from "next/image";
+'use client';
 
-export default function Home() {
+import { useEffect, useState } from 'react';
+
+const API = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
+
+type Resume = {
+  id: string;
+  filename: string;
+  key: string;
+  size: number;
+  content_type: string;
+  status: 'processing' | 'ready' | 'failed';
+  created_at: number;
+};
+
+export default function ResumesPage() {
+  const [items, setItems] = useState<Resume[]>([]);
+  const [file, setFile] = useState<File | null>(null);
+  const [stage, setStage] = useState<string>('');
+
+  async function fetchResumes() {
+    const res = await fetch(`${API}/resumes`, { cache: 'no-store' });
+    setItems(await res.json());
+  }
+
+  useEffect(() => { fetchResumes(); }, []);
+
+  async function handleUpload() {
+    if (!file) return;
+
+    // get presigned post to add to add a resume
+    setStage('asking api for upload url...');
+    const presignedPost = await fetch(`${API}/resumes/upload-url`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filename: file.name,
+        content_type: file.type || 'application/octet-stream',
+        size: file.size,
+      }),
+    }).then(r => {
+      if (!r.ok) throw new Error('upload-url failed');
+      return r.json();
+    });
+
+    // use it to send file to s3
+    setStage('uploading to s3 ...');
+    const form = new FormData();
+    Object.entries(presignedPost.fields).forEach(([k, v]) => form.append(k, String(v)));
+    if (!('key' in presignedPost.fields)) form.append('key', presignedPost.key); 
+    form.append('file', file);
+    const s3response = await fetch(presignedPost.url, { method: 'POST', body: form });
+    if (!(s3response.status === 201 || s3response.status === 204)) {
+      setStage('s3 upload failed');
+      return;
+    }
+
+    // confirm the upload was successful
+    setStage('confirming with api...');
+    await fetch(`${API}/resumes/confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: presignedPost.key }),
+    }).then(r => {
+      if (!r.ok) throw new Error('confirm failed');
+    });
+
+    setStage('refreshing');
+    setFile(null);
+    await fetchResumes();
+    setStage('done');
+    setTimeout(() => setStage(''), 1200);
+  }
+
+  async function download(resumeId: string) {
+    const r = await fetch(`${API}/resumes/${resumeId}/download-url`);
+    const { url } = await r.json();
+    window.open(url, '_blank');
+  }
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+    <main className="mx-auto max-w-2xl p-6 space-y-6">
+      <h1 className="text-2xl font-semibold">Resumes</h1>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
+      <section className="border rounded-2xl p-4 space-y-3">
+        <input
+          type="file"
+          accept=".pdf,.docx,.png,.jpg,.jpeg,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/png,image/jpeg"
+          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+        />
+        <button
+          onClick={handleUpload}
+          disabled={!file}
+          className="bg-black text-white rounded px-3 py-2 disabled:opacity-50"
         >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
+          Upload
+        </button>
+        <div className="text-sm text-gray-600">{stage}</div>
+      </section>
+
+      <section className="space-y-2">
+        {items.length === 0 && <div className="text-gray-600">No resumes yet.</div>}
+        <ul className="space-y-2">
+          {items.map((r) => (
+            <li key={r.id} className="border rounded-xl p-3">
+              <div className="font-medium">{r.filename}</div>
+              <div className="text-sm text-gray-600">
+                {Math.round(r.size / 1024)} KB · {r.status}
+              </div>
+              <div className="mt-2">
+                <button onClick={() => download(r.id)} className="text-sm underline">
+                  Download
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </section>
+    </main>
   );
 }
