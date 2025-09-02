@@ -1,9 +1,10 @@
 import uuid
 from fastapi import APIRouter, HTTPException, Path
 from pydantic import BaseModel, Field
-from .s3_client import s3, BUCKET
+from .s3_client import s3_client, S3_BUCKET, AWS_REGION
 import time
 from typing import Literal
+from botocore.exceptions import ClientError
 
 router = APIRouter(prefix="/resumes", tags=["resumes"])
 
@@ -20,7 +21,6 @@ class UploadURLRequest(BaseModel):
     filename: str
     content_type: str
     size: int = Field(..., ge=1, le=MAX_BYTES)
-
 @router.post("/upload-url")
 def get_upload_url(body: UploadURLRequest):
     if body.content_type not in ALLOWED_TYPES:
@@ -29,16 +29,23 @@ def get_upload_url(body: UploadURLRequest):
     ext = body.filename.split(".")[-1].lower()
     key = f"dev/resumes/{uuid.uuid4()}.{ext}"
 
-    fields = {"Content-Type": body.content_type, "success_action_status": "201"}
+    fields = {
+        "key": key,
+        "Content-Type": body.content_type,
+    }
     conditions = [
-        {"bucket": BUCKET},
+        {"bucket": S3_BUCKET},
+        ["eq", "$key", key],
+        ["eq", "$Content-Type", body.content_type],
         ["content-length-range", 1, MAX_BYTES],
-        ["starts-with", "$Content-Type", body.content_type.split("/")[0]],
     ]
 
-    presigned = s3().generate_presigned_post(
-        Bucket=BUCKET, Key=key, Fields=fields, Conditions=conditions, ExpiresIn=300
+    presigned = s3_client().generate_presigned_post(
+        Bucket=S3_BUCKET, Key=key, Fields=fields, Conditions=conditions, ExpiresIn=300
     )
+
+    presigned["url"] = f"https://{S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com"
+
     return {"key": key, **presigned}
 
 
@@ -69,7 +76,7 @@ class ResumeRow(BaseModel):
 def confirm_upload(req: ConfirmUpload):
     # make sure the object is actually in S3
     try:
-        head = s3().head_object(Bucket=BUCKET, Key=req.key)
+        head = s3_client().head_object(Bucket=S3_BUCKET, Key=req.key)
     except Exception:
         raise HTTPException(400, "Object not in s3")
 
@@ -98,9 +105,9 @@ def get_download_url(resume_id: str = Path(...)):
     row = _RESUMES.get(resume_id)
     if not row:
         raise HTTPException(404, "resume not found")
-    url = s3().generate_presigned_url(
+    url = s3_client().generate_presigned_url(
         "get_object",
-        Params={"Bucket": BUCKET, "Key": row["key"]},
+        Params={"Bucket": S3_BUCKET, "Key": row["key"]},
         ExpiresIn=300,  # 5 minutes
     )
     return {"url": url}
