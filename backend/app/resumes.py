@@ -4,7 +4,6 @@ from pydantic import BaseModel, Field
 from .s3_client import s3_client, S3_BUCKET, AWS_REGION
 import time
 from typing import Literal
-from botocore.exceptions import ClientError
 
 router = APIRouter(prefix="/resumes", tags=["resumes"])
 
